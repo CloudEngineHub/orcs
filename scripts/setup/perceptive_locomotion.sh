@@ -3,15 +3,16 @@
 # needs it, and `import orcs` degrades to a skipped registration without it.
 #
 #   1. sparse-clone the source datasets    -> $ORCS_DATA_ROOT/<dataset>
-#   2. shallow-clone the GRAIL code repo   -> $ORCS_DEPS_ROOT/GRAIL
-#   3. WAIT for you to drop the SMPL-X body models in (licensed, not fetchable)
-#   4. stage exactly what the rosters ask for -> $ORCS_DATA_ROOT/terrain_motions
+#   2. the SMPL-X body models: downloaded if SMPLX_USER/SMPLX_PASS hold your
+#      smpl-x.is.tue.mpg.de login, else WAIT for you to drop them in  (SMPL only)
+#   3. stage exactly what the rosters ask for -> $ORCS_DATA_ROOT/terrain_motions
 #
 # Idempotent + resumable: every step no-ops when its output is already there,
 # so a failed download is a re-run, not a restart.
 #
-# Requires: git-lfs, and the active env from `sync_dependencies.sh` (staging
-# imports orcs, mjlab, pxr/USD for GRAIL geometry, smplx+joblib for --smpl).
+# Requires: git-lfs, and the uv environment from `sync_deps.sh` (staging
+# imports orcs, mjlab, pxr/USD + joblib for GRAIL, smplx for --smpl — the
+# `perloco` and `smpl` extras).
 
 set -euo pipefail
 
@@ -48,7 +49,8 @@ usage() {
   --sources omni,grail      which datasets           (default: both)
   --grail-categories curb   GRAIL terrain categories (default: curb)
   --with-video              keep GRAIL's video/ dir  (+13 GB, unread)
-  --no-smpl                 skip SMPL-X; -Smpl task will not register
+  --no-smpl                 skip SMPL-X and GRAIL's recon/; -Smpl task
+                            will not register
   --skip-clone              stage what is already on disk
   --skip-stage              fetch only
   --yes                     non-interactive (fail instead of prompting)
@@ -169,11 +171,13 @@ fi
 if [ "$SKIP_CLONE" = 0 ] && has grail; then
     # ONLY the three dirs GrailSource opens: robot/ (the retargeted clip),
     # object_usd/ (tile geometry, and NOT lfs — it rides the checkout) and
-    # recon/ (the SMPL-X human, --smpl). objects/ and meta/ are lfs and unread.
+    # recon/ (the SMPL-X human — fetched only with SMPL). objects/ and meta/ are lfs
+    # and unread.
+    dirs=(robot object_usd); [ "$WITH_SMPL" = 1 ] && dirs+=(recon)
     patterns=() lfs=()
     IFS=',' read -ra cats <<< "$GRAIL_CATEGORIES"
     for c in "${cats[@]}"; do
-        for d in robot object_usd recon; do
+        for d in "${dirs[@]}"; do
             patterns+=("/data/$c/$d/")
         done
         if [ "$WITH_VIDEO" = 1 ]; then
@@ -183,7 +187,9 @@ if [ "$SKIP_CLONE" = 0 ] && has grail; then
         # Blobs are scoped to the ROSTERED families — a curb category ships
         # 1769 takes and the roster names 8 of them. 126 files, not 8846.
         for f in $(roster_families grail); do
-            lfs+=("data/$c/robot/*__${f}__*" "data/$c/recon/*__${f}__*")
+            for d in robot recon; do
+                [[ " ${dirs[*]} " == *" $d "* ]] && lfs+=("data/$c/$d/*__${f}__*")
+            done
         done
     done
     clone_sparse https://huggingface.co/datasets/nvidia/PhysicalAI-Robotics-Locomanipulation-GRAIL \
@@ -192,26 +198,52 @@ if [ "$SKIP_CLONE" = 0 ] && has grail; then
         '/README.md' "${patterns[@]}"
 fi
 
-# ── 2. GRAIL code ───────────────────────────────────────────────────────────
-# Reference only (retargeter + its vendored SONIC), never imported by orcs. It
-# is also where SMPL-X conventionally lands, which is why it comes before §3.
-if [ "$SKIP_CLONE" = 0 ] && has grail; then
-    echo
-    echo "=== GRAIL (code) ==="
-    if [ -d "$DEPS_ROOT/GRAIL/.git" ]; then
-        echo "[ HEAD OK] already cloned"
+# ── 2. SMPL-X body models — download if registered, else the manual gate ────
+# Licensed: every user registers at smpl-x.is.tue.mpg.de themselves. With that
+# login in SMPLX_USER/SMPLX_PASS the files are fetched from the same endpoint the
+# site's own download button posts to; without it, the manual gate below. The
+# credentials go to curl on STDIN, never argv (argv is world-readable in `ps`).
+# A wrong login returns an HTML page, not an error — `unzip -tq` is the check.
+smplx_download() {
+    local tmp src rc=0 model
+    tmp=$(mktemp -d)
+    echo "[ FETCH  ] SMPL-X v1.1 as $SMPLX_USER"
+    if python -c 'import os, urllib.parse as u; print(u.urlencode({
+        "username": os.environ["SMPLX_USER"], "password": os.environ["SMPLX_PASS"]}), end="")' \
+    | curl -fL --progress-bar -d @- -o "$tmp/smplx.zip" \
+        "${SMPLX_URL:-https://download.is.tue.mpg.de/download.php?domain=smplx&sfile=models_smplx_v1_1.zip&resume=1}" \
+    && unzip -tq "$tmp/smplx.zip" >/dev/null 2>&1 \
+    && unzip -q "$tmp/smplx.zip" -d "$tmp/x"; then
+        src=$(dirname "$(find "$tmp/x" -name SMPLX_NEUTRAL.npz -print -quit)")
+        if [ "$src" = . ]; then
+            rc=1
+        else
+            # These are the only files ORCS reads. Do not retain meshes, PKLs,
+            # examples, or the rest of the licensed archive.
+            for model in NEUTRAL MALE FEMALE; do
+                if [ -f "$src/SMPLX_${model}.npz" ] && \
+                   ! cp "$src/SMPLX_${model}.npz" "$SMPLX_DIR/smplx/"; then
+                    rc=1
+                fi
+            done
+            [ -f "$SMPLX_DIR/smplx/SMPLX_NEUTRAL.npz" ] || rc=1
+        fi
     else
-        # No submodules: they are the recon/generation stack (MoGe, FoundationPose,
-        # Hunyuan3D, ...), gigabytes that staging never touches.
-        git clone --depth 1 https://github.com/NVlabs/GRAIL "$DEPS_ROOT/GRAIL"
+        rc=1
     fi
-fi
+    rm -rf "$tmp"
+    [ $rc = 0 ] || echo "[ WARN   ] SMPL-X download failed (wrong login? not registered?) — manual gate"
+    return 0
+}
 
-# ── 3. SMPL-X body models — the manual gate ─────────────────────────────────
 if [ "$WITH_SMPL" = 1 ]; then
     echo
     echo "=== SMPL-X body models ==="
     mkdir -p "$SMPLX_DIR/smplx"
+    if [ ! -f "$SMPLX_DIR/smplx/SMPLX_NEUTRAL.npz" ] && [ -n "${SMPLX_USER:-}" ] \
+       && [ -n "${SMPLX_PASS:-}" ]; then
+        smplx_download
+    fi
     while [ ! -f "$SMPLX_DIR/smplx/SMPLX_NEUTRAL.npz" ]; do
         cat <<EOF
 [ MANUAL ] SMPL-X is licensed — download it yourself, we cannot fetch it.
@@ -222,6 +254,7 @@ if [ "$WITH_SMPL" = 1 ]; then
        $SMPLX_DIR/smplx/SMPLX_NEUTRAL.npz
 
   (ORCS_SMPLX_DIR overrides that location for both this script and staging.)
+  (Registered? SMPLX_USER=<email> SMPLX_PASS=<password> re-run downloads it.)
 EOF
         if [ "$ASSUME_YES" = 1 ]; then
             echo "[ERROR] --yes given and SMPL-X is absent; re-run without --yes, or --no-smpl"
@@ -232,7 +265,7 @@ EOF
     echo "[ OK     ] $SMPLX_DIR/smplx"
 fi
 
-# ── 4. stage ────────────────────────────────────────────────────────────────
+# ── 3. stage ────────────────────────────────────────────────────────────────
 # Families/levels come from the ROSTER, not from this script: the roster is what
 # the env builds its grid from, so a hardcoded list here would be a second
 # source of "which tiles exist" and would drift the day one is edited.
@@ -252,7 +285,7 @@ if [ "$SKIP_STAGE" = 0 ]; then
     done
 fi
 
-# ── 5. verify ───────────────────────────────────────────────────────────────
+# ── 4. verify ───────────────────────────────────────────────────────────────
 echo
 echo "=== registered ==="
 python -c '

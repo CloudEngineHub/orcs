@@ -6,16 +6,19 @@ remain shared with the other ORCS tasks.
 
 ## prerequisites
 
-Complete the root [installation](../readme.md#setup) with the `perloco` extra
+Complete the root [installation](../readme.md#setup) with the `perloco,smpl` extras
 inside an active Python 3.11 environment. You also need Git LFS and enough disk
 space for the selected source data.
 
 GRAIL SMPL staging requires the licensed **SMPL-X v1.1 NPZ** release. Register
 at [smpl-x.is.tue.mpg.de](https://smpl-x.is.tue.mpg.de), download
 `SMPL-X v1.1 (NPZ+PKL)`, and keep `SMPLX_NEUTRAL.npz` ready. The setup script
-will print the exact destination and pause until the file exists. Stage the
+will print the exact destination and pause until the file exists — or, with your
+login in `SMPLX_USER` / `SMPLX_PASS`, download it for you. Stage the
 male and female `.npz` alongside it: reconstructed UOLM staging wants SMPL-H
 (`ORCS_SMPLH_DIR`, `smplh/SMPLH_*.pkl`) and falls back to `SMPLX_MALE.npz`.
+The default SMPL-X root is `$ORCS_DEPS_ROOT/body_models`; no GRAIL code checkout
+is required. `ORCS_SMPLX_DIR` overrides it.
 
 ## fetch and stage GRAIL
 
@@ -28,9 +31,9 @@ bash scripts/setup/perceptive_locomotion.sh --sources grail
 The command is idempotent and resumable. It:
 
 1. downloads only the GRAIL curb families named by the packaged roster;
-2. clones the GRAIL reference code without its large submodules;
-3. waits for `SMPLX_NEUTRAL.npz` at the printed path;
-4. stages terrain, robot motion, and SMPL motion under
+2. downloads `SMPLX_NEUTRAL.npz` if `SMPLX_USER`/`SMPLX_PASS` are set, else waits
+   for it at the printed path (SMPL only);
+3. stages terrain, robot motion, and SMPL motion under
    `$ORCS_DATA_ROOT/terrain_motions/grail`.
 
 The current roster stages 63 clips over 8 curb tiles. Source selection lives in
@@ -43,7 +46,8 @@ To fetch both supported PerLoco datasets instead:
 bash scripts/setup/perceptive_locomotion.sh
 ```
 
-Use `--no-smpl` only when you do not need the `-Smpl` task. Run
+Use `--no-smpl` when you do not need the `-Smpl` task; it also skips GRAIL's
+`recon/` data and the licensed body-model gate. Run
 `bash scripts/setup/perceptive_locomotion.sh --help` for fetch-only,
 stage-only, and non-interactive options.
 
@@ -77,8 +81,8 @@ For SMPL point tracking and seed-backed RSI, continue with
 
 ## troubleshooting
 
-- `No module named pxr` or `smplx`: install `.[perloco]`, then rerun
-  `scripts/setup/sync_dependencies.sh` so the pinned `rsl_rl` fork remains the
+- `No module named pxr` or `smplx`: rerun `scripts/setup/sync_deps.sh` (without
+  `--no-smpl`) so the tooling and pinned `rsl_rl` fork are installed in the
   final install.
 - An LFS pointer is being parsed as data: install Git LFS and rerun the setup
   script; do not run an unscoped `git lfs pull` in the full GRAIL dataset.
