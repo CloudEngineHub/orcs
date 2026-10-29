@@ -13,13 +13,16 @@ EXPECTED_TASKS = {
     "Orcs-PerLoco-Grail-AdaptSonic",
     "Orcs-PerLoco-OmRe-AdaptSonic",
     "Orcs-Uolm-AdaptSonic",
+    "Orcs-PerLoco-EgoHtr-AdaptSonic",
 }
 
 
 def test_release_manifest_contract():
     manifest = release.release_manifest()
     assert manifest["repo_id"] == "lkrajan/orcs"
-    assert manifest["revision"] == "v0.1.0"
+    # Pin the merged model bundle, independent of later main/tag changes.
+    assert manifest["revision"] == "92fa052800ab5bf911b0057132f5dd47b32d7413"
+    assert manifest["release"] == "v0.1.1"
     assert set(manifest["models"]) == EXPECTED_TASKS
     for task_id, model in manifest["models"].items():
         checkpoint = model["checkpoint"]
